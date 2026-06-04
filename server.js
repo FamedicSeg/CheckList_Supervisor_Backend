@@ -627,6 +627,55 @@ app.get('/api/jefe/weekly-stats', authenticateToken, checkRole(['JEFE_PRODUCCION
   }
 });
 
+// Agrega este endpoint ANTES de app.listen()
+
+// ELIMINAR checklist específico (solo para Jefe/Admin)
+app.delete('/api/jefe/checklists/:id', authenticateToken, checkRole(['JEFE_PRODUCCION', 'ADMINISTRADOR']), async (req, res) => {
+  const checklistId = req.params.id;
+  
+  try {
+    // Primero verificar si existe el checklist
+    const checklist = await db.queryOne(
+      'SELECT id, status FROM checklists WHERE id = ?',
+      [checklistId]
+    );
+    
+    if (!checklist) {
+      return res.status(404).json({ error: 'Checklist no encontrado' });
+    }
+    
+    // Verificar si tiene respuestas asociadas
+    const respuestas = await db.queryOne(
+      'SELECT COUNT(*) as total FROM respuestas WHERE checklist_id = ?',
+      [checklistId]
+    );
+    
+    // Iniciar transacción para eliminar en orden
+    await db.runAsync('BEGIN TRANSACTION');
+    
+    // 1. Eliminar respuestas del checklist
+    if (respuestas.total > 0) {
+      await db.runAsync('DELETE FROM respuestas WHERE checklist_id = ?', [checklistId]);
+    }
+    
+    // 2. Eliminar el checklist
+    const result = await db.runAsync('DELETE FROM checklists WHERE id = ?', [checklistId]);
+    
+    await db.runAsync('COMMIT');
+    
+    res.json({ 
+      success: true, 
+      message: `Checklist ${checklistId} eliminado correctamente`,
+      respuestas_eliminadas: respuestas.total
+    });
+    
+  } catch (error) {
+    await db.runAsync('ROLLBACK');
+    console.error('Error eliminando checklist:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // =============================================
 // INICIAR SERVIDOR
 // =============================================
