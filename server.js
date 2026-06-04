@@ -634,15 +634,7 @@ app.get('/api/jefe/weekly-stats', authenticateToken, checkRole(['JEFE_PRODUCCION
 // Inicializar base de datos y luego iniciar el servidor
 inicializarBaseDatos().then(() => {
   app.listen(PORT, () => {
-    console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
-    console.log(`📋 Endpoints disponibles:`);
-    console.log(`   POST   /api/auth/login`);
-    console.log(`   GET    /api/supervisor/active-checklist`);
-    console.log(`   POST   /api/supervisor/response`);
-    console.log(`   POST   /api/supervisor/finalize-checklist`);
-    console.log(`   GET    /api/jefe/checklists`);
-    console.log(`   GET    /api/jefe/active-checklists`);
-    console.log(`   GET    /api/jefe/checklists/:id`);
+    console.log(`🚀 Servidor corriendo en:${PORT}`);
   });
 }).catch(error => {
   console.error('❌ Error al inicializar la base de datos:', error);

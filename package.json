@@ -1,4 +1,12 @@
 {
+  "name":"backend-checklist",
+  "version":"1.0.0",
+  "description": "Backend para los checklist-supervisor",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server2.js",
+    "dev": "nodemon server.js"
+  },
   "dependencies": {
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
