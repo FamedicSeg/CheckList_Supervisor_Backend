@@ -677,6 +677,154 @@ app.delete('/api/jefe/checklists/:id', authenticateToken, checkRole(['JEFE_PRODU
 });
 
 // =============================================
+// ADMIN PANEL — DATABASE BROWSER
+// =============================================
+
+// Allowlist of known tables to prevent SQL injection via table name
+const ALLOWED_TABLES = ['usuarios', 'secciones', 'checklist_items', 'checklists', 'respuestas'];
+
+function isAllowedTable(name) {
+  return ALLOWED_TABLES.includes(name);
+}
+
+// GET /admin — serve the admin panel HTML
+app.get('/admin', (req, res) => {
+  const path = require('path');
+  res.sendFile(path.join(__dirname, 'admin-panel.html'));
+});
+
+// GET /api/admin/tables — list all tables
+app.get('/api/admin/tables', async (req, res) => {
+  try {
+    const rows = await db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    );
+    res.json({ tables: rows.map(r => r.name) });
+  } catch (error) {
+    console.error('Admin: error listing tables:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// GET /api/admin/tables/:tableName — schema + first page of data
+app.get('/api/admin/tables/:tableName', async (req, res) => {
+  const { tableName } = req.params;
+  if (!isAllowedTable(tableName)) {
+    return res.status(400).json({ error: 'Tabla no permitida' });
+  }
+  try {
+    const schema = await db.query(`PRAGMA table_info(${tableName})`);
+    const rows   = await db.query(`SELECT * FROM ${tableName}`);
+    res.json({ table: tableName, schema, rows });
+  } catch (error) {
+    console.error(`Admin: error reading table ${tableName}:`, error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// GET /api/admin/tables/:tableName/data — paginated data
+app.get('/api/admin/tables/:tableName/data', async (req, res) => {
+  const { tableName } = req.params;
+  if (!isAllowedTable(tableName)) {
+    return res.status(400).json({ error: 'Tabla no permitida' });
+  }
+  const limit  = Math.min(parseInt(req.query.limit,  10) || 50, 500);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0,  0);
+  try {
+    const total = await db.queryOne(`SELECT COUNT(*) as count FROM ${tableName}`);
+    const rows  = await db.query(`SELECT * FROM ${tableName} LIMIT ? OFFSET ?`, [limit, offset]);
+    res.json({ table: tableName, total: total.count, limit, offset, rows });
+  } catch (error) {
+    console.error(`Admin: error fetching data from ${tableName}:`, error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// POST /api/admin/tables/:tableName — insert a new record
+app.post('/api/admin/tables/:tableName', async (req, res) => {
+  const { tableName } = req.params;
+  if (!isAllowedTable(tableName)) {
+    return res.status(400).json({ error: 'Tabla no permitida' });
+  }
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Object.keys(body).length === 0) {
+    return res.status(400).json({ error: 'Cuerpo de la solicitud vacío' });
+  }
+  try {
+    const schema = await db.query(`PRAGMA table_info(${tableName})`);
+    const allowedCols = schema.filter(c => !c.pk).map(c => c.name);
+    const cols   = Object.keys(body).filter(k => allowedCols.includes(k));
+    const values = cols.map(k => body[k]);
+    if (cols.length === 0) {
+      return res.status(400).json({ error: 'No se proporcionaron columnas válidas' });
+    }
+    const placeholders = cols.map(() => '?').join(', ');
+    const result = await db.runAsync(
+      `INSERT INTO ${tableName} (${cols.join(', ')}) VALUES (${placeholders})`,
+      values
+    );
+    res.status(201).json({ success: true, id: result.lastID });
+  } catch (error) {
+    console.error(`Admin: error inserting into ${tableName}:`, error);
+    res.status(500).json({ error: error.message || 'Error interno del servidor' });
+  }
+});
+
+// PUT /api/admin/tables/:tableName/:id — update a record by id
+app.put('/api/admin/tables/:tableName/:id', async (req, res) => {
+  const { tableName, id } = req.params;
+  if (!isAllowedTable(tableName)) {
+    return res.status(400).json({ error: 'Tabla no permitida' });
+  }
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Object.keys(body).length === 0) {
+    return res.status(400).json({ error: 'Cuerpo de la solicitud vacío' });
+  }
+  try {
+    const schema = await db.query(`PRAGMA table_info(${tableName})`);
+    const allowedCols = schema.filter(c => !c.pk).map(c => c.name);
+    const cols   = Object.keys(body).filter(k => allowedCols.includes(k));
+    const values = cols.map(k => body[k]);
+    if (cols.length === 0) {
+      return res.status(400).json({ error: 'No se proporcionaron columnas válidas' });
+    }
+    const setClause = cols.map(c => `${c} = ?`).join(', ');
+    const result = await db.runAsync(
+      `UPDATE ${tableName} SET ${setClause} WHERE id = ?`,
+      [...values, id]
+    );
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Registro no encontrado' });
+    }
+    res.json({ success: true, changes: result.changes });
+  } catch (error) {
+    console.error(`Admin: error updating ${tableName}/${id}:`, error);
+    res.status(500).json({ error: error.message || 'Error interno del servidor' });
+  }
+});
+
+// DELETE /api/admin/tables/:tableName/:id — delete a record by id
+app.delete('/api/admin/tables/:tableName/:id', async (req, res) => {
+  const { tableName, id } = req.params;
+  if (!isAllowedTable(tableName)) {
+    return res.status(400).json({ error: 'Tabla no permitida' });
+  }
+  try {
+    const result = await db.runAsync(
+      `DELETE FROM ${tableName} WHERE id = ?`,
+      [id]
+    );
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Registro no encontrado' });
+    }
+    res.json({ success: true, changes: result.changes });
+  } catch (error) {
+    console.error(`Admin: error deleting ${tableName}/${id}:`, error);
+    res.status(500).json({ error: error.message || 'Error interno del servidor' });
+  }
+});
+
+// =============================================
 // INICIAR SERVIDOR
 // =============================================
 
