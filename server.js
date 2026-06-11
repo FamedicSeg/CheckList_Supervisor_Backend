@@ -3,6 +3,34 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { db, inicializarBaseDatos } = require('./db');
 
+// =============================================
+// CONFIGURACIÓN DE ZONA HORARIA - ECUADOR
+// =============================================
+
+// Forzar zona horaria de Ecuador (Guayaquil/Quito - UTC-5)
+process.env.TZ = 'America/Guayaquil';
+
+// Función auxiliar para obtener la fecha actual en Ecuador (YYYY-MM-DD)
+const getEcuadorDate = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Función auxiliar para obtener datetime actual en Ecuador (YYYY-MM-DD HH:MM:SS)
+const getEcuadorDateTime = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const seconds = String(now.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+};
+
 const app = express();
 const PORT = 5000;
 const JWT_SECRET = 'tu-secreto-super-seguro-cambiar-en-produccion';
@@ -114,24 +142,37 @@ app.get('/api/usuarios', async (req, res) => {
 
 // Obtener checklist activo del supervisor (o crear uno nuevo)
 app.get('/api/supervisor/active-checklist', authenticateToken, checkRole(['SUPERVISOR']), async (req, res) => {
-  const today = new Date().toISOString().split('T')[0];
+  const today = getEcuadorDate(); // Usar fecha de Ecuador
   const supervisorId = req.user.id;
   
   try {
-    // Buscar checklist del día (en progreso o completado)
+    // Buscar checklist del día que esté en progreso
     let checklist = await db.queryOne(
       `SELECT * FROM checklists 
-       WHERE supervisor_id = ? AND fecha = ? AND status IN ('en_progreso', 'completado')
+       WHERE supervisor_id = ? AND fecha = ? AND status = 'en_progreso'
        ORDER BY id DESC LIMIT 1`,
       [supervisorId, today]
     );
     
     if (!checklist) {
+      // Verificar si ya completó un checklist hoy
+      const completadoHoy = await db.queryOne(
+        `SELECT id FROM checklists 
+         WHERE supervisor_id = ? AND fecha = ? AND status = 'completado'`,
+        [supervisorId, today]
+      );
+      
+      if (completadoHoy) {
+        return res.status(403).json({ 
+          error: 'Ya has completado el checklist de hoy. No puedes crear uno nuevo.' 
+        });
+      }
+      
       // Crear nuevo checklist para hoy
       const result = await db.runAsync(
-        `INSERT INTO checklists (supervisor_id, numero_turno, fecha, status) 
-         VALUES (?, ?, ?, 'en_progreso')`,
-        [supervisorId, 1, today]
+        `INSERT INTO checklists (supervisor_id, numero_turno, fecha, status, iniciado_en) 
+         VALUES (?, ?, ?, 'en_progreso', ?)`,
+        [supervisorId, 1, today, getEcuadorDateTime()]
       );
       
       checklist = await db.queryOne('SELECT * FROM checklists WHERE id = ?', [result.lastID]);
@@ -168,6 +209,7 @@ app.get('/api/supervisor/active-checklist', authenticateToken, checkRole(['SUPER
     
     res.json({
       checklist_id: checklist.id,
+      fecha: checklist.fecha, // Enviar la fecha al frontend
       items: items,
       respuestas: respuestasMap,
       status: checklist.status,
@@ -223,12 +265,12 @@ app.post('/api/supervisor/response', authenticateToken, checkRole(['SUPERVISOR']
   try {
     await db.runAsync(
       `INSERT INTO respuestas (checklist_id, item_id, verificado, observaciones, actualizado_en)
-       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+       VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(checklist_id, item_id) DO UPDATE SET
          verificado = excluded.verificado,
          observaciones = excluded.observaciones,
-         actualizado_en = CURRENT_TIMESTAMP`,
-      [checklist_id, item_id, verificado ? 1 : 0, observaciones || null]
+         actualizado_en = excluded.actualizado_en`,
+      [checklist_id, item_id, verificado ? 1 : 0, observaciones || null, getEcuadorDateTime()]
     );
     
     res.json({ success: true, message: 'Respuesta guardada' });
@@ -246,14 +288,14 @@ app.post('/api/supervisor/finalize-checklist', authenticateToken, checkRole(['SU
     const result = await db.runAsync(
       `UPDATE checklists 
        SET status = 'completado', 
-           completado_en = datetime('now', '-5 hours'),
+           completado_en = ?,
            observaciones_generales = ?
-       WHERE id = ? AND supervisor_id = ?`,
-      [observaciones_generales || null, checklist_id, req.user.id]
+       WHERE id = ? AND supervisor_id = ? AND status = 'en_progreso'`,
+      [getEcuadorDateTime(), observaciones_generales || null, checklist_id, req.user.id]
     );
     
     if (result.changes === 0) {
-      return res.status(404).json({ error: 'Checklist no encontrado' });
+      return res.status(404).json({ error: 'Checklist no encontrado o ya finalizado' });
     }
     
     res.json({ success: true, message: 'Checklist finalizado' });
@@ -382,7 +424,7 @@ app.get('/api/jefe/checklists', authenticateToken, checkRole(['JEFE_PRODUCCION',
     console.error('Error obteniendo checklists:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
-})
+});
 
 // Obtener checklists activos (en tiempo real)
 app.get('/api/jefe/active-checklists', authenticateToken, checkRole(['JEFE_PRODUCCION', 'ADMINISTRADOR']), async (req, res) => {
@@ -416,7 +458,7 @@ app.get('/api/jefe/active-checklists', authenticateToken, checkRole(['JEFE_PRODU
     console.error('Error obteniendo checklists activos:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
-})
+});
 
 // Ver detalle de un checklist específico
 app.get('/api/jefe/checklists/:id', authenticateToken, checkRole(['JEFE_PRODUCCION', 'ADMINISTRADOR']), async (req, res) => {
@@ -538,7 +580,6 @@ app.get('/api/jefe/weekly-stats', authenticateToken, checkRole(['JEFE_PRODUCCION
     const weekNum = parseInt(weekStr, 10);
 
     // Calcular el lunes de la semana ISO
-    // 4 de enero siempre está en la semana 1 del año
     const jan4 = new Date(year, 0, 4);
     const jan4Day = jan4.getDay() || 7; // 1=lun .. 7=dom
     const monday = new Date(jan4);
@@ -627,8 +668,6 @@ app.get('/api/jefe/weekly-stats', authenticateToken, checkRole(['JEFE_PRODUCCION
   }
 });
 
-// Agrega este endpoint ANTES de app.listen()
-
 // ELIMINAR checklist específico (solo para Jefe/Admin)
 app.delete('/api/jefe/checklists/:id', authenticateToken, checkRole(['JEFE_PRODUCCION', 'ADMINISTRADOR']), async (req, res) => {
   const checklistId = req.params.id;
@@ -683,7 +722,9 @@ app.delete('/api/jefe/checklists/:id', authenticateToken, checkRole(['JEFE_PRODU
 // Inicializar base de datos y luego iniciar el servidor
 inicializarBaseDatos().then(() => {
   app.listen(PORT, () => {
-    console.log(`🚀 Servidor corriendo en:${PORT}`);
+    console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
+    console.log(`📍 Zona horaria configurada: ${process.env.TZ}`);
+    console.log(`📅 Fecha actual en Ecuador: ${getEcuadorDate()} ${new Date().toLocaleTimeString()}`);
   });
 }).catch(error => {
   console.error('❌ Error al inicializar la base de datos:', error);
