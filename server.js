@@ -33,7 +33,7 @@ const getEcuadorDateTime = () => {
 
 const app = express();
 const PORT = 5000;
-const JWT_SECRET = 'tu-secreto-super-seguro-cambiar-en-produccion';
+const JWT_SECRET = process.env.JWT_SECRET || 'tu-secreto-super-seguro-cambiar-en-produccion';
 
 // Middleware
 app.use(cors());
