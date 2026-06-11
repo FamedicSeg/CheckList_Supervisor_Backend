@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Panel — SQLite</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Scrollable table wrapper */
+    .table-scroll { overflow-x: auto; }
+    /* Truncate long cell values */
+    td.cell-value { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Modal backdrop */
+    #modal-backdrop { transition: opacity 0.15s ease; }
+    /* Sidebar active */
+    .table-link.active { background-color: #1e40af; color: #fff; }
+  </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col">
+
+  <!-- ── Top bar ── -->
+  <header class="bg-blue-800 text-white px-6 py-3 flex items-center justify-between shadow-md">
+    <div class="flex items-center gap-3">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round"
+          d="M4 7h16M4 12h16M4 17h16" />
+      </svg>
+      <span class="text-lg font-semibold tracking-wide">SQLite Admin Panel</span>
+      <span class="text-blue-300 text-sm font-mono">/app/database/checklist.db</span>
+    </div>
+    <span id="status-badge"
+      class="text-xs px-2 py-1 rounded-full bg-blue-700 text-blue-200">Conectando…</span>
+  </header>
+
+  <div class="flex flex-1 overflow-hidden">
+
+    <!-- ── Sidebar ── -->
+    <aside class="w-56 bg-white border-r border-gray-200 flex flex-col shadow-sm">
+      <div class="px-4 py-3 border-b border-gray-100">
+        <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Tablas</p>
+      </div>
+      <nav id="table-list" class="flex-1 overflow-y-auto py-2">
+        <p class="px-4 py-2 text-sm text-gray-400 italic">Cargando…</p>
+      </nav>
+    </aside>
+
+    <!-- ── Main content ── -->
+    <main class="flex-1 flex flex-col overflow-hidden">
+
+      <!-- Toolbar -->
+      <div id="toolbar"
+        class="hidden bg-white border-b border-gray-200 px-6 py-3 flex items-center gap-3 flex-wrap shadow-sm">
+        <h2 id="table-title" class="text-base font-semibold text-gray-700 mr-2"></h2>
+
+        <!-- Search -->
+        <div class="relative flex-1 min-w-[180px] max-w-xs">
+          <input id="search-input" type="text" placeholder="Buscar…"
+            class="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400" />
+          <svg class="absolute left-2 top-2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor"
+            stroke-width="2" viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="8" /><path stroke-linecap="round" d="M21 21l-4.35-4.35" />
+          </svg>
+        </div>
+
+        <!-- Rows per page -->
+        <select id="page-size"
+          class="text-sm border border-gray-300 rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400">
+          <option value="20">20 filas</option>
+          <option value="50">50 filas</option>
+          <option value="100">100 filas</option>
+        </select>
+
+        <div class="flex-1"></div>
+
+        <!-- Add record -->
+        <button id="btn-add"
+          class="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-3 py-1.5 rounded-md transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+          Agregar fila
+        </button>
+
+        <!-- Refresh -->
+        <button id="btn-refresh"
+          class="flex items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-md transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M4 4v5h.582M20 20v-5h-.581M4.582 9A8 8 0 0120 15M19.418 15A8 8 0 014 9" />
+          </svg>
+          Actualizar
+        </button>
+      </div>
+
+      <!-- Table area -->
+      <div class="flex-1 overflow-auto p-6">
+        <!-- Welcome state -->
+        <div id="welcome-state" class="flex flex-col items-center justify-center h-full text-gray-400">
+          <svg class="w-16 h-16 mb-4 text-gray-300" fill="none" stroke="currentColor" stroke-width="1.5"
+            viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M20 7H4a2 2 0 00-2 2v6a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V5a2 2 0 012-2h4a2 2 0 012 2v2" />
+          </svg>
+          <p class="text-lg font-medium">Selecciona una tabla</p>
+          <p class="text-sm mt-1">Elige una tabla del panel izquierdo para explorar sus datos.</p>
+        </div>
+
+        <!-- Loading state -->
+        <div id="loading-state" class="hidden flex flex-col items-center justify-center h-full text-gray-400">
+          <svg class="w-10 h-10 animate-spin text-blue-400 mb-3" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+            <path class="opacity-75" fill="currentColor"
+              d="M4 12a8 8 0 018-8v8H4z" />
+          </svg>
+          <p class="text-sm">Cargando datos…</p>
+        </div>
+
+        <!-- Error state -->
+        <div id="error-state" class="hidden bg-red-50 border border-red-200 rounded-lg p-6 text-red-700">
+          <p class="font-semibold mb-1">Error al cargar datos</p>
+          <p id="error-message" class="text-sm"></p>
+        </div>
+
+        <!-- Data table -->
+        <div id="data-section" class="hidden flex flex-col gap-4">
+          <!-- Meta row -->
+          <div class="flex items-center justify-between text-sm text-gray-500">
+            <span id="row-count-label"></span>
+            <!-- Pagination -->
+            <div class="flex items-center gap-2">
+              <button id="btn-prev"
+                class="px-3 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition text-xs">
+                ← Anterior
+              </button>
+              <span id="page-label" class="text-xs font-medium text-gray-600"></span>
+              <button id="btn-next"
+                class="px-3 py-1 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition text-xs">
+                Siguiente →
+              </button>
+            </div>
+          </div>
+
+          <!-- Table -->
+          <div class="table-scroll bg-white rounded-lg shadow-sm border border-gray-200">
+            <table class="min-w-full text-sm">
+              <thead id="table-head" class="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs uppercase tracking-wide"></thead>
+              <tbody id="table-body" class="divide-y divide-gray-100 text-gray-700"></tbody>
+            </table>
+          </div>
+
+          <!-- Schema accordion -->
+          <details class="bg-white rounded-lg shadow-sm border border-gray-200 text-sm">
+            <summary
+              class="px-4 py-3 cursor-pointer font-medium text-gray-600 hover:bg-gray-50 rounded-lg select-none">
+              Esquema de la tabla
+            </summary>
+            <div class="overflow-x-auto border-t border-gray-100">
+              <table class="min-w-full text-xs">
+                <thead class="bg-gray-50 text-gray-500 uppercase tracking-wide">
+                  <tr>
+                    <th class="px-4 py-2 text-left">Columna</th>
+                    <th class="px-4 py-2 text-left">Tipo</th>
+                    <th class="px-4 py-2 text-left">Not Null</th>
+                    <th class="px-4 py-2 text-left">Default</th>
+                    <th class="px-4 py-2 text-left">PK</th>
+                  </tr>
+                </thead>
+                <tbody id="schema-body" class="divide-y divide-gray-100 text-gray-600"></tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ── Modal ── -->
+  <div id="modal-backdrop"
+    class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <h3 id="modal-title" class="text-base font-semibold text-gray-800"></h3>
+        <button id="modal-close"
+          class="text-gray-400 hover:text-gray-600 transition">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <form id="modal-form" class="px-6 py-4 space-y-3 max-h-[70vh] overflow-y-auto">
+        <!-- Fields injected here -->
+      </form>
+      <div class="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50">
+        <button type="button" id="modal-cancel"
+          class="px-4 py-2 text-sm rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100 transition">
+          Cancelar
+        </button>
+        <button type="submit" form="modal-form" id="modal-submit"
+          class="px-4 py-2 text-sm rounded-md bg-blue-600 hover:bg-blue-700 text-white font-medium transition">
+          Guardar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Confirm delete dialog ── -->
+  <div id="confirm-backdrop"
+    class="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 hidden">
+    <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 p-6">
+      <div class="flex items-start gap-3 mb-4">
+        <div class="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+          <svg class="w-5 h-5 text-red-600" fill="none" stroke="currentColor" stroke-width="2"
+            viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+        </div>
+        <div>
+          <p class="font-semibold text-gray-800">Eliminar registro</p>
+          <p id="confirm-message" class="text-sm text-gray-500 mt-1"></p>
+        </div>
+      </div>
+      <div class="flex justify-end gap-3">
+        <button id="confirm-cancel"
+          class="px-4 py-2 text-sm rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100 transition">
+          Cancelar
+        </button>
+        <button id="confirm-ok"
+          class="px-4 py-2 text-sm rounded-md bg-red-600 hover:bg-red-700 text-white font-medium transition">
+          Eliminar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Toast ── -->
+  <div id="toast"
+    class="fixed bottom-6 right-6 z-50 hidden px-4 py-3 rounded-lg shadow-lg text-sm font-medium text-white transition-all">
+  </div>
+
+  <script>
+    // ─────────────────────────────────────────────
+    // State
+    // ─────────────────────────────────────────────
+    const state = {
+      currentTable: null,
+      schema: [],
+      allRows: [],       // full dataset for client-side search
+      filteredRows: [],  // after search filter
+      page: 0,
+      pageSize: 20,
+      searchQuery: '',
+      editingId: null,   // null = insert, number = update
+    };
+
+    // ─────────────────────────────────────────────
+    // DOM refs
+    // ─────────────────────────────────────────────
+    const $ = id => document.getElementById(id);
+    const tableList     = $('table-list');
+    const toolbar       = $('toolbar');
+    const tableTitle    = $('table-title');
+    const welcomeState  = $('welcome-state');
+    const loadingState  = $('loading-state');
+    const errorState    = $('error-state');
+    const errorMessage  = $('error-message');
+    const dataSection   = $('data-section');
+    const tableHead     = $('table-head');
+    const tableBody     = $('table-body');
+    const schemaBody    = $('schema-body');
+    const rowCountLabel = $('row-count-label');
+    const pageLabel     = $('page-label');
+    const btnPrev       = $('btn-prev');
+    const btnNext       = $('btn-next');
+    const searchInput   = $('search-input');
+    const pageSizeSelect= $('page-size');
+    const btnAdd        = $('btn-add');
+    const btnRefresh    = $('btn-refresh');
+    const statusBadge   = $('status-badge');
+
+    // Modal
+    const modalBackdrop = $('modal-backdrop');
+    const modalTitle    = $('modal-title');
+    const modalForm     = $('modal-form');
+    const modalClose    = $('modal-close');
+    const modalCancel   = $('modal-cancel');
+
+    // Confirm
+    const confirmBackdrop = $('confirm-backdrop');
+    const confirmMessage  = $('confirm-message');
+    const confirmCancel   = $('confirm-cancel');
+    const confirmOk       = $('confirm-ok');
+
+    // Toast
+    const toast = $('toast');
+
+    // ─────────────────────────────────────────────
+    // Toast helper
+    // ─────────────────────────────────────────────
+    let toastTimer;
+    function showToast(msg, type = 'success') {
+      clearTimeout(toastTimer);
+      toast.textContent = msg;
+      toast.className = `fixed bottom-6 right-6 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium text-white transition-all ${
+        type === 'success' ? 'bg-green-600' : 'bg-red-600'
+      }`;
+      toastTimer = setTimeout(() => { toast.classList.add('hidden'); }, 3000);
+    }
+
+    // ─────────────────────────────────────────────
+    // API helpers
+    // ─────────────────────────────────────────────
+    async function apiFetch(path, options = {}) {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        ...options,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    // ─────────────────────────────────────────────
+    // Load table list
+    // ─────────────────────────────────────────────
+    async function loadTables() {
+      try {
+        const data = await apiFetch('/api/admin/tables');
+        statusBadge.textContent = '● Conectado';
+        statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-green-700 text-green-200';
+
+        tableList.innerHTML = '';
+        data.tables.forEach(t => {
+          const btn = document.createElement('button');
+          btn.className = 'table-link w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition rounded-none flex items-center gap-2';
+          btn.dataset.table = t;
+          btn.innerHTML = `
+            <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/>
+            </svg>
+            <span class="truncate">${t}</span>`;
+          btn.addEventListener('click', () => selectTable(t));
+          tableList.appendChild(btn);
+        });
+      } catch (err) {
+        statusBadge.textContent = '● Sin conexión';
+        statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-red-700 text-red-200';
+        tableList.innerHTML = `<p class="px-4 py-2 text-xs text-red-500">${err.message}</p>`;
+      }
+    }
+
+    // ─────────────────────────────────────────────
+    // Select & load table
+    // ─────────────────────────────────────────────
+    async function selectTable(name) {
+      // Update sidebar highlight
+      document.querySelectorAll('.table-link').forEach(b => {
+        b.classList.toggle('active', b.dataset.table === name);
+      });
+
+      state.currentTable = name;
+      state.page = 0;
+      state.searchQuery = '';
+      searchInput.value = '';
+
+      tableTitle.textContent = name;
+      toolbar.classList.remove('hidden');
+      showLoading();
+
+      try {
+        const data = await apiFetch(`/api/admin/tables/${name}`);
+        state.schema = data.schema;
+        state.allRows = data.rows;
+        state.filteredRows = [...data.rows];
+        renderSchema(data.schema);
+        renderTable();
+        showData();
+      } catch (err) {
+        showError(err.message);
+      }
+    }
+
+    // ─────────────────────────────────────────────
+    // Render schema
+    // ─────────────────────────────────────────────
+    function renderSchema(schema) {
+      schemaBody.innerHTML = schema.map(col => `
+        <tr class="hover:bg-gray-50">
+          <td class="px-4 py-2 font-mono font-medium text-blue-700">${esc(col.name)}</td>
+          <td class="px-4 py-2 text-gray-500">${esc(col.type)}</td>
+          <td class="px-4 py-2">${col.notnull ? '<span class="text-red-500">✓</span>' : '<span class="text-gray-300">—</span>'}</td>
+          <td class="px-4 py-2 font-mono text-gray-400">${col.dflt_value !== null ? esc(String(col.dflt_value)) : '<span class="text-gray-300">—</span>'}</td>
+          <td class="px-4 py-2">${col.pk ? '<span class="text-yellow-500 font-bold">PK</span>' : '<span class="text-gray-300">—</span>'}</td>
+        </tr>`).join('');
+    }
+
+    // ─────────────────────────────────────────────
+    // Render table data
+    // ─────────────────────────────────────────────
+    function renderTable() {
+      const rows = state.filteredRows;
+      const ps   = state.pageSize;
+      const totalPages = Math.max(1, Math.ceil(rows.length / ps));
+      state.page = Math.min(state.page, totalPages - 1);
+
+      const pageRows = rows.slice(state.page * ps, (state.page + 1) * ps);
+      const cols = state.schema.map(c => c.name);
+
+      // Head
+      tableHead.innerHTML = `<tr>
+        ${cols.map(c => `<th class="px-4 py-2 text-left whitespace-nowrap">${esc(c)}</th>`).join('')}
+        <th class="px-4 py-2 text-right">Acciones</th>
+      </tr>`;
+
+      // Body
+      if (pageRows.length === 0) {
+        tableBody.innerHTML = `<tr><td colspan="${cols.length + 1}" class="px-4 py-8 text-center text-gray-400 italic">Sin resultados</td></tr>`;
+      } else {
+        tableBody.innerHTML = pageRows.map(row => {
+          const id = row['id'] ?? row[cols[0]];
+          return `<tr class="hover:bg-blue-50 transition group">
+            ${cols.map(c => `<td class="px-4 py-2 cell-value" title="${esc(String(row[c] ?? ''))}">${
+              row[c] === null ? '<span class="text-gray-300 italic text-xs">NULL</span>' : esc(String(row[c]))
+            }</td>`).join('')}
+            <td class="px-4 py-2 text-right whitespace-nowrap">
+              <button class="btn-edit text-blue-500 hover:text-blue-700 text-xs font-medium mr-3 transition"
+                data-id="${esc(String(id))}">Editar</button>
+              <button class="btn-delete text-red-400 hover:text-red-600 text-xs font-medium transition"
+                data-id="${esc(String(id))}">Eliminar</button>
+            </td>
+          </tr>`;
+        }).join('');
+      }
+
+      // Pagination labels
+      const start = rows.length === 0 ? 0 : state.page * ps + 1;
+      const end   = Math.min((state.page + 1) * ps, rows.length);
+      rowCountLabel.textContent = `${rows.length} registro${rows.length !== 1 ? 's' : ''}${state.searchQuery ? ' (filtrados)' : ''}`;
+      pageLabel.textContent = `Página ${state.page + 1} de ${totalPages}`;
+      btnPrev.disabled = state.page === 0;
+      btnNext.disabled = state.page >= totalPages - 1;
+
+      // Attach row action listeners
+      tableBody.querySelectorAll('.btn-edit').forEach(btn => {
+        btn.addEventListener('click', () => openEditModal(btn.dataset.id));
+      });
+      tableBody.querySelectorAll('.btn-delete').forEach(btn => {
+        btn.addEventListener('click', () => openConfirmDelete(btn.dataset.id));
+      });
+    }
+
+    // ─────────────────────────────────────────────
+    // State display helpers
+    // ─────────────────────────────────────────────
+    function showLoading() {
+      welcomeState.classList.add('hidden');
+      loadingState.classList.remove('hidden');
+      errorState.classList.add('hidden');
+      dataSection.classList.add('hidden');
+    }
+    function showData() {
+      welcomeState.classList.add('hidden');
+      loadingState.classList.add('hidden');
+      errorState.classList.add('hidden');
+      dataSection.classList.remove('hidden');
+    }
+    function showError(msg) {
+      welcomeState.classList.add('hidden');
+      loadingState.classList.add('hidden');
+      errorState.classList.remove('hidden');
+      dataSection.classList.add('hidden');
+      errorMessage.textContent = msg;
+    }
+
+    // ─────────────────────────────────────────────
+    // Search / filter (client-side)
+    // ─────────────────────────────────────────────
+    function applySearch() {
+      const q = state.searchQuery.toLowerCase().trim();
+      if (!q) {
+        state.filteredRows = [...state.allRows];
+      } else {
+        state.filteredRows = state.allRows.filter(row =>
+          Object.values(row).some(v => v !== null && String(v).toLowerCase().includes(q))
+        );
+      }
+      state.page = 0;
+      renderTable();
+    }
+
+    searchInput.addEventListener('input', e => {
+      state.searchQuery = e.target.value;
+      applySearch();
+    });
+
+    pageSizeSelect.addEventListener('change', e => {
+      state.pageSize = parseInt(e.target.value, 10);
+      state.page = 0;
+      renderTable();
+    });
+
+    btnPrev.addEventListener('click', () => { state.page--; renderTable(); });
+    btnNext.addEventListener('click', () => { state.page++; renderTable(); });
+
+    btnRefresh.addEventListener('click', () => {
+      if (state.currentTable) selectTable(state.currentTable);
+    });
+
+    // ─────────────────────────────────────────────
+    // Modal helpers
+    // ─────────────────────────────────────────────
+    function buildFormFields(schema, rowData = {}) {
+      modalForm.innerHTML = schema
+        .filter(col => !col.pk) // skip PK (auto-increment)
+        .map(col => {
+          const val = rowData[col.name] !== undefined && rowData[col.name] !== null
+            ? String(rowData[col.name]) : '';
+          const isTextArea = col.type.toUpperCase().includes('TEXT') && val.length > 80;
+          const inputEl = isTextArea
+            ? `<textarea id="field-${esc(col.name)}" name="${esc(col.name)}" rows="3"
+                class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400">${esc(val)}</textarea>`
+            : `<input id="field-${esc(col.name)}" name="${esc(col.name)}" type="text" value="${esc(val)}"
+                class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />`;
+          return `
+            <div>
+              <label class="block text-xs font-semibold text-gray-500 mb-1 uppercase tracking-wide">
+                ${esc(col.name)}
+                <span class="font-normal text-gray-400 normal-case ml-1">${esc(col.type)}</span>
+                ${col.notnull ? '<span class="text-red-400 ml-1">*</span>' : ''}
+              </label>
+              ${inputEl}
+            </div>`;
+        }).join('');
+    }
+
+    function getFormValues(schema) {
+      const values = {};
+      schema.filter(col => !col.pk).forEach(col => {
+        const el = document.getElementById(`field-${col.name}`);
+        if (el) values[col.name] = el.value === '' ? null : el.value;
+      });
+      return values;
+    }
+
+    function openModal() {
+      modalBackdrop.classList.remove('hidden');
+    }
+    function closeModal() {
+      modalBackdrop.classList.add('hidden');
+      state.editingId = null;
+    }
+
+    modalClose.addEventListener('click', closeModal);
+    modalCancel.addEventListener('click', closeModal);
+    modalBackdrop.addEventListener('click', e => { if (e.target === modalBackdrop) closeModal(); });
+
+    // ─────────────────────────────────────────────
+    // Add record
+    // ─────────────────────────────────────────────
+    btnAdd.addEventListener('click', () => {
+      state.editingId = null;
+      modalTitle.textContent = `Agregar fila — ${state.currentTable}`;
+      buildFormFields(state.schema);
+      openModal();
+    });
+
+    // ─────────────────────────────────────────────
+    // Edit record
+    // ─────────────────────────────────────────────
+    function openEditModal(id) {
+      const row = state.allRows.find(r => {
+        const pk = state.schema.find(c => c.pk);
+        const pkCol = pk ? pk.name : state.schema[0].name;
+        return String(r[pkCol]) === String(id);
+      });
+      if (!row) return;
+      state.editingId = id;
+      modalTitle.textContent = `Editar fila — ${state.currentTable} #${id}`;
+      buildFormFields(state.schema, row);
+      openModal();
+    }
+
+    // ─────────────────────────────────────────────
+    // Form submit (insert / update)
+    // ─────────────────────────────────────────────
+    modalForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const values = getFormValues(state.schema);
+      try {
+        if (state.editingId !== null) {
+          await apiFetch(`/api/admin/tables/${state.currentTable}/${state.editingId}`, {
+            method: 'PUT',
+            body: JSON.stringify(values),
+          });
+          showToast('Registro actualizado correctamente');
+        } else {
+          await apiFetch(`/api/admin/tables/${state.currentTable}`, {
+            method: 'POST',
+            body: JSON.stringify(values),
+          });
+          showToast('Registro creado correctamente');
+        }
+        closeModal();
+        await selectTable(state.currentTable);
+      } catch (err) {
+        showToast(err.message, 'error');
+      }
+    });
+
+    // ─────────────────────────────────────────────
+    // Delete record
+    // ─────────────────────────────────────────────
+    let pendingDeleteId = null;
+
+    function openConfirmDelete(id) {
+      pendingDeleteId = id;
+      confirmMessage.textContent = `¿Eliminar el registro con ID ${id} de la tabla "${state.currentTable}"? Esta acción no se puede deshacer.`;
+      confirmBackdrop.classList.remove('hidden');
+    }
+
+    confirmCancel.addEventListener('click', () => {
+      confirmBackdrop.classList.add('hidden');
+      pendingDeleteId = null;
+    });
+    confirmBackdrop.addEventListener('click', e => {
+      if (e.target === confirmBackdrop) {
+        confirmBackdrop.classList.add('hidden');
+        pendingDeleteId = null;
+      }
+    });
+
+    confirmOk.addEventListener('click', async () => {
+      if (pendingDeleteId === null) return;
+      confirmBackdrop.classList.add('hidden');
+      try {
+        await apiFetch(`/api/admin/tables/${state.currentTable}/${pendingDeleteId}`, {
+          method: 'DELETE',
+        });
+        showToast('Registro eliminado');
+        pendingDeleteId = null;
+        await selectTable(state.currentTable);
+      } catch (err) {
+        showToast(err.message, 'error');
+        pendingDeleteId = null;
+      }
+    });
+
+    // ─────────────────────────────────────────────
+    // Escape HTML
+    // ─────────────────────────────────────────────
+    function esc(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // ─────────────────────────────────────────────
+    // Boot
+    // ─────────────────────────────────────────────
+    loadTables();
+  </script>
+</body>
+</html>
