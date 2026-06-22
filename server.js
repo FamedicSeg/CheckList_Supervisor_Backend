@@ -3,37 +3,9 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { db, inicializarBaseDatos } = require('./db');
 
-// =============================================
-// CONFIGURACIÓN DE ZONA HORARIA - ECUADOR
-// =============================================
-
-// Forzar zona horaria de Ecuador (Guayaquil/Quito - UTC-5)
-process.env.TZ = 'America/Guayaquil';
-
-// Función auxiliar para obtener la fecha actual en Ecuador (YYYY-MM-DD)
-const getEcuadorDate = () => {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-// Función auxiliar para obtener datetime actual en Ecuador (YYYY-MM-DD HH:MM:SS)
-const getEcuadorDateTime = () => {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  const seconds = String(now.getSeconds()).padStart(2, '0');
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-};
-
 const app = express();
 const PORT = 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'tu-secreto-super-seguro-cambiar-en-produccion';
+const JWT_SECRET = 'tu-secreto-super-seguro-cambiar-en-produccion';
 
 // Middleware
 app.use(cors());
@@ -142,37 +114,24 @@ app.get('/api/usuarios', async (req, res) => {
 
 // Obtener checklist activo del supervisor (o crear uno nuevo)
 app.get('/api/supervisor/active-checklist', authenticateToken, checkRole(['SUPERVISOR']), async (req, res) => {
-  const today = getEcuadorDate(); // Usar fecha de Ecuador
+  const today = new Date().toISOString().split('T')[0];
   const supervisorId = req.user.id;
   
   try {
-    // Buscar checklist del día que esté en progreso
+    // Buscar checklist del día (en progreso o completado)
     let checklist = await db.queryOne(
       `SELECT * FROM checklists 
-       WHERE supervisor_id = ? AND fecha = ? AND status = 'en_progreso'
+       WHERE supervisor_id = ? AND fecha = ? AND status IN ('en_progreso', 'completado')
        ORDER BY id DESC LIMIT 1`,
       [supervisorId, today]
     );
     
     if (!checklist) {
-      // Verificar si ya completó un checklist hoy
-      const completadoHoy = await db.queryOne(
-        `SELECT id FROM checklists 
-         WHERE supervisor_id = ? AND fecha = ? AND status = 'completado'`,
-        [supervisorId, today]
-      );
-      
-      if (completadoHoy) {
-        return res.status(403).json({ 
-          error: 'Ya has completado el checklist de hoy. No puedes crear uno nuevo.' 
-        });
-      }
-      
       // Crear nuevo checklist para hoy
       const result = await db.runAsync(
-        `INSERT INTO checklists (supervisor_id, numero_turno, fecha, status, iniciado_en) 
-         VALUES (?, ?, ?, 'en_progreso', ?)`,
-        [supervisorId, 1, today, getEcuadorDateTime()]
+        `INSERT INTO checklists (supervisor_id, numero_turno, fecha, status) 
+         VALUES (?, ?, ?, 'en_progreso')`,
+        [supervisorId, 1, today]
       );
       
       checklist = await db.queryOne('SELECT * FROM checklists WHERE id = ?', [result.lastID]);
@@ -209,7 +168,6 @@ app.get('/api/supervisor/active-checklist', authenticateToken, checkRole(['SUPER
     
     res.json({
       checklist_id: checklist.id,
-      fecha: checklist.fecha, // Enviar la fecha al frontend
       items: items,
       respuestas: respuestasMap,
       status: checklist.status,
@@ -229,12 +187,12 @@ app.post('/api/supervisor/save-progress', authenticateToken, checkRole(['SUPERVI
     const result = await db.runAsync(
       `UPDATE checklists
        SET observaciones_generales = ?
-       WHERE id = ? AND supervisor_id = ? AND status IN ('en_progreso', 'en_edicion')`,
+       WHERE id = ? AND supervisor_id = ? AND (status = 'en_progreso' OR status = 'en_edicion')`,
       [observaciones_generales || null, checklist_id, req.user.id]
     );
 
     if (result.changes === 0) {
-      return res.status(404).json({ error: 'Checklist no encontrado o ya finalizado' });
+      return res.status(404).json({ error: 'Checklist no encontrado o no disponible para editar' });
     }
 
     res.json({ success: true, message: 'Progreso guardado correctamente' });
@@ -259,7 +217,7 @@ app.post('/api/supervisor/response', authenticateToken, checkRole(['SUPERVISOR']
       return res.status(404).json({ error: 'Checklist no encontrado' });
     }
     if (cl.status !== 'en_progreso' && cl.status !== 'en_edicion') {
-      return res.status(403).json({ error: 'El turno no está disponible para editar' });
+      return res.status(403).json({ error: 'El turno no está disponible para editar. Estado: ' + cl.status });
     }
   } catch (error) {
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -268,12 +226,12 @@ app.post('/api/supervisor/response', authenticateToken, checkRole(['SUPERVISOR']
   try {
     await db.runAsync(
       `INSERT INTO respuestas (checklist_id, item_id, verificado, observaciones, actualizado_en)
-       VALUES (?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
        ON CONFLICT(checklist_id, item_id) DO UPDATE SET
          verificado = excluded.verificado,
          observaciones = excluded.observaciones,
-         actualizado_en = excluded.actualizado_en`,
-      [checklist_id, item_id, verificado ? 1 : 0, observaciones || null, getEcuadorDateTime()]
+         actualizado_en = CURRENT_TIMESTAMP`,
+      [checklist_id, item_id, verificado ? 1 : 0, observaciones || null]
     );
     
     res.json({ success: true, message: 'Respuesta guardada' });
@@ -291,19 +249,67 @@ app.post('/api/supervisor/finalize-checklist', authenticateToken, checkRole(['SU
     const result = await db.runAsync(
       `UPDATE checklists 
        SET status = 'completado', 
-           completado_en = ?,
+           completado_en = datetime('now', '-5 hours'),
            observaciones_generales = ?
-       WHERE id = ? AND supervisor_id = ? AND status = 'en_progreso'`,
-      [getEcuadorDateTime(), observaciones_generales || null, checklist_id, req.user.id]
+       WHERE id = ? AND supervisor_id = ?`,
+      [observaciones_generales || null, checklist_id, req.user.id]
     );
     
     if (result.changes === 0) {
-      return res.status(404).json({ error: 'Checklist no encontrado o ya finalizado' });
+      return res.status(404).json({ error: 'Checklist no encontrado' });
     }
     
     res.json({ success: true, message: 'Checklist finalizado' });
   } catch (error) {
     console.error('Error finalizando checklist:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Reabrir checklist para edición (cambiar status de 'completado' a 'en_edicion')
+app.post('/api/supervisor/reopen-checklist', authenticateToken, checkRole(['SUPERVISOR']), async (req, res) => {
+  const { checklist_id } = req.body;
+  
+  try {
+    const result = await db.runAsync(
+      `UPDATE checklists 
+       SET status = 'en_edicion'
+       WHERE id = ? AND supervisor_id = ? AND (status = 'completado' OR status = 'finalizado' OR status = 'en_progreso')`,
+      [checklist_id, req.user.id]
+    );
+    
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Checklist no encontrado o no está finalizado' });
+    }
+    
+    res.json({ success: true, message: 'Checklist reabierto para edición' });
+  } catch (error) {
+    console.error('Error reabriendo checklist:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Finalizar edición (cambiar status de 'en_edicion' a 'completado')
+app.post('/api/supervisor/finalize-edit', authenticateToken, checkRole(['SUPERVISOR']), async (req, res) => {
+  const { checklist_id, observaciones_generales } = req.body;
+  
+  try {
+    const result = await db.runAsync(
+      `UPDATE checklists 
+       SET status = 'completado',
+           completado_en = datetime('now', '-5 hours'),
+           observaciones_generales = ?
+       WHERE id = ? AND supervisor_id = ? AND status = 'en_edicion'`,
+      [observaciones_generales || null, checklist_id, req.user.id]
+    );
+    
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Checklist no encontrado o no está en edición' });
+    }
+    
+    res.json({ success: true, message: 'Edición finalizada' });
+  } catch (error) {
+    console.error('Error finalizando edición:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -389,54 +395,6 @@ app.get('/api/supervisor/checklist/:id', authenticateToken, checkRole(['SUPERVIS
   }
 });
 
-// Reabrir checklist finalizado para edición
-app.post('/api/supervisor/reopen-checklist', authenticateToken, checkRole(['SUPERVISOR']), async (req, res) => {
-  const { checklist_id } = req.body;
-  
-  try {
-    const result = await db.runAsync(
-      `UPDATE checklists 
-       SET status = 'en_edicion'
-       WHERE id = ? AND supervisor_id = ? AND status = 'completado'`,
-      [checklist_id, req.user.id]
-    );
-    
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Checklist no encontrado o no está finalizado' });
-    }
-    
-    res.json({ success: true, message: 'Checklist reabierto para edición' });
-  } catch (error) {
-    console.error('Error reabriendo checklist:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
-
-// Finalizar edición (cambiar status de 'en_edicion' a 'completado')
-app.post('/api/supervisor/finalize-edit', authenticateToken, checkRole(['SUPERVISOR']), async (req, res) => {
-  const { checklist_id, observaciones_generales } = req.body;
-  
-  try {
-    const result = await db.runAsync(
-      `UPDATE checklists 
-       SET status = 'completado',
-           completado_en = ?,
-           observaciones_generales = ?
-       WHERE id = ? AND supervisor_id = ? AND status = 'en_edicion'`,
-      [getEcuadorDateTime(), observaciones_generales || null, checklist_id, req.user.id]
-    );
-    
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Checklist no encontrado o no está en edición' });
-    }
-    
-    res.json({ success: true, message: 'Edición finalizada' });
-  } catch (error) {
-    console.error('Error finalizando edición:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
-
 // =============================================
 // ENDPOINTS PARA JEFE DE PRODUCCIÓN
 // =============================================
@@ -475,7 +433,7 @@ app.get('/api/jefe/checklists', authenticateToken, checkRole(['JEFE_PRODUCCION',
     console.error('Error obteniendo checklists:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
-});
+})
 
 // Obtener checklists activos (en tiempo real)
 app.get('/api/jefe/active-checklists', authenticateToken, checkRole(['JEFE_PRODUCCION', 'ADMINISTRADOR']), async (req, res) => {
@@ -509,7 +467,7 @@ app.get('/api/jefe/active-checklists', authenticateToken, checkRole(['JEFE_PRODU
     console.error('Error obteniendo checklists activos:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
-});
+})
 
 // Ver detalle de un checklist específico
 app.get('/api/jefe/checklists/:id', authenticateToken, checkRole(['JEFE_PRODUCCION', 'ADMINISTRADOR']), async (req, res) => {
@@ -631,6 +589,7 @@ app.get('/api/jefe/weekly-stats', authenticateToken, checkRole(['JEFE_PRODUCCION
     const weekNum = parseInt(weekStr, 10);
 
     // Calcular el lunes de la semana ISO
+    // 4 de enero siempre está en la semana 1 del año
     const jan4 = new Date(year, 0, 4);
     const jan4Day = jan4.getDay() || 7; // 1=lun .. 7=dom
     const monday = new Date(jan4);
@@ -719,201 +678,6 @@ app.get('/api/jefe/weekly-stats', authenticateToken, checkRole(['JEFE_PRODUCCION
   }
 });
 
-// ELIMINAR checklist específico (solo para Jefe/Admin)
-app.delete('/api/jefe/checklists/:id', authenticateToken, checkRole(['JEFE_PRODUCCION', 'ADMINISTRADOR']), async (req, res) => {
-  const checklistId = req.params.id;
-  
-  try {
-    // Primero verificar si existe el checklist
-    const checklist = await db.queryOne(
-      'SELECT id, status FROM checklists WHERE id = ?',
-      [checklistId]
-    );
-    
-    if (!checklist) {
-      return res.status(404).json({ error: 'Checklist no encontrado' });
-    }
-    
-    // Verificar si tiene respuestas asociadas
-    const respuestas = await db.queryOne(
-      'SELECT COUNT(*) as total FROM respuestas WHERE checklist_id = ?',
-      [checklistId]
-    );
-    
-    // Iniciar transacción para eliminar en orden
-    await db.runAsync('BEGIN TRANSACTION');
-    
-    // 1. Eliminar respuestas del checklist
-    if (respuestas.total > 0) {
-      await db.runAsync('DELETE FROM respuestas WHERE checklist_id = ?', [checklistId]);
-    }
-    
-    // 2. Eliminar el checklist
-    const result = await db.runAsync('DELETE FROM checklists WHERE id = ?', [checklistId]);
-    
-    await db.runAsync('COMMIT');
-    
-    res.json({ 
-      success: true, 
-      message: `Checklist ${checklistId} eliminado correctamente`,
-      respuestas_eliminadas: respuestas.total
-    });
-    
-  } catch (error) {
-    await db.runAsync('ROLLBACK');
-    console.error('Error eliminando checklist:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
-
-// =============================================
-// ADMIN PANEL — DATABASE BROWSER
-// =============================================
-
-// Allowlist of known tables to prevent SQL injection via table name
-const ALLOWED_TABLES = ['usuarios', 'secciones', 'checklist_items', 'checklists', 'respuestas'];
-
-function isAllowedTable(name) {
-  return ALLOWED_TABLES.includes(name);
-}
-
-// GET /admin — serve the admin panel HTML
-app.get('/admin', (req, res) => {
-  const path = require('path');
-  res.sendFile(path.join(__dirname, 'admin-panel.html'));
-});
-
-// GET /api/admin/tables — list all tables
-app.get('/api/admin/tables', async (req, res) => {
-  try {
-    const rows = await db.query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-    );
-    res.json({ tables: rows.map(r => r.name) });
-  } catch (error) {
-    console.error('Admin: error listing tables:', error);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
-
-// GET /api/admin/tables/:tableName — schema + first page of data
-app.get('/api/admin/tables/:tableName', async (req, res) => {
-  const { tableName } = req.params;
-  if (!isAllowedTable(tableName)) {
-    return res.status(400).json({ error: 'Tabla no permitida' });
-  }
-  try {
-    const schema = await db.query(`PRAGMA table_info(${tableName})`);
-    const rows   = await db.query(`SELECT * FROM ${tableName}`);
-    res.json({ table: tableName, schema, rows });
-  } catch (error) {
-    console.error(`Admin: error reading table ${tableName}:`, error);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
-
-// GET /api/admin/tables/:tableName/data — paginated data
-app.get('/api/admin/tables/:tableName/data', async (req, res) => {
-  const { tableName } = req.params;
-  if (!isAllowedTable(tableName)) {
-    return res.status(400).json({ error: 'Tabla no permitida' });
-  }
-  const limit  = Math.min(parseInt(req.query.limit,  10) || 50, 500);
-  const offset = Math.max(parseInt(req.query.offset, 10) || 0,  0);
-  try {
-    const total = await db.queryOne(`SELECT COUNT(*) as count FROM ${tableName}`);
-    const rows  = await db.query(`SELECT * FROM ${tableName} LIMIT ? OFFSET ?`, [limit, offset]);
-    res.json({ table: tableName, total: total.count, limit, offset, rows });
-  } catch (error) {
-    console.error(`Admin: error fetching data from ${tableName}:`, error);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
-
-// POST /api/admin/tables/:tableName — insert a new record
-app.post('/api/admin/tables/:tableName', async (req, res) => {
-  const { tableName } = req.params;
-  if (!isAllowedTable(tableName)) {
-    return res.status(400).json({ error: 'Tabla no permitida' });
-  }
-  const body = req.body;
-  if (!body || typeof body !== 'object' || Object.keys(body).length === 0) {
-    return res.status(400).json({ error: 'Cuerpo de la solicitud vacío' });
-  }
-  try {
-    const schema = await db.query(`PRAGMA table_info(${tableName})`);
-    const allowedCols = schema.filter(c => !c.pk).map(c => c.name);
-    const cols   = Object.keys(body).filter(k => allowedCols.includes(k));
-    const values = cols.map(k => body[k]);
-    if (cols.length === 0) {
-      return res.status(400).json({ error: 'No se proporcionaron columnas válidas' });
-    }
-    const placeholders = cols.map(() => '?').join(', ');
-    const result = await db.runAsync(
-      `INSERT INTO ${tableName} (${cols.join(', ')}) VALUES (${placeholders})`,
-      values
-    );
-    res.status(201).json({ success: true, id: result.lastID });
-  } catch (error) {
-    console.error(`Admin: error inserting into ${tableName}:`, error);
-    res.status(500).json({ error: error.message || 'Error interno del servidor' });
-  }
-});
-
-// PUT /api/admin/tables/:tableName/:id — update a record by id
-app.put('/api/admin/tables/:tableName/:id', async (req, res) => {
-  const { tableName, id } = req.params;
-  if (!isAllowedTable(tableName)) {
-    return res.status(400).json({ error: 'Tabla no permitida' });
-  }
-  const body = req.body;
-  if (!body || typeof body !== 'object' || Object.keys(body).length === 0) {
-    return res.status(400).json({ error: 'Cuerpo de la solicitud vacío' });
-  }
-  try {
-    const schema = await db.query(`PRAGMA table_info(${tableName})`);
-    const allowedCols = schema.filter(c => !c.pk).map(c => c.name);
-    const cols   = Object.keys(body).filter(k => allowedCols.includes(k));
-    const values = cols.map(k => body[k]);
-    if (cols.length === 0) {
-      return res.status(400).json({ error: 'No se proporcionaron columnas válidas' });
-    }
-    const setClause = cols.map(c => `${c} = ?`).join(', ');
-    const result = await db.runAsync(
-      `UPDATE ${tableName} SET ${setClause} WHERE id = ?`,
-      [...values, id]
-    );
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Registro no encontrado' });
-    }
-    res.json({ success: true, changes: result.changes });
-  } catch (error) {
-    console.error(`Admin: error updating ${tableName}/${id}:`, error);
-    res.status(500).json({ error: error.message || 'Error interno del servidor' });
-  }
-});
-
-// DELETE /api/admin/tables/:tableName/:id — delete a record by id
-app.delete('/api/admin/tables/:tableName/:id', async (req, res) => {
-  const { tableName, id } = req.params;
-  if (!isAllowedTable(tableName)) {
-    return res.status(400).json({ error: 'Tabla no permitida' });
-  }
-  try {
-    const result = await db.runAsync(
-      `DELETE FROM ${tableName} WHERE id = ?`,
-      [id]
-    );
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Registro no encontrado' });
-    }
-    res.json({ success: true, changes: result.changes });
-  } catch (error) {
-    console.error(`Admin: error deleting ${tableName}/${id}:`, error);
-    res.status(500).json({ error: error.message || 'Error interno del servidor' });
-  }
-});
-
 // =============================================
 // INICIAR SERVIDOR
 // =============================================
@@ -922,8 +686,14 @@ app.delete('/api/admin/tables/:tableName/:id', async (req, res) => {
 inicializarBaseDatos().then(() => {
   app.listen(PORT, () => {
     console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
-    console.log(`📍 Zona horaria configurada: ${process.env.TZ}`);
-    console.log(`📅 Fecha actual en Ecuador: ${getEcuadorDate()} ${new Date().toLocaleTimeString()}`);
+    console.log(`📋 Endpoints disponibles:`);
+    console.log(`   POST   /api/auth/login`);
+    console.log(`   GET    /api/supervisor/active-checklist`);
+    console.log(`   POST   /api/supervisor/response`);
+    console.log(`   POST   /api/supervisor/finalize-checklist`);
+    console.log(`   GET    /api/jefe/checklists`);
+    console.log(`   GET    /api/jefe/active-checklists`);
+    console.log(`   GET    /api/jefe/checklists/:id`);
   });
 }).catch(error => {
   console.error('❌ Error al inicializar la base de datos:', error);
