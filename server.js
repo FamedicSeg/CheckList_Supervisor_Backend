@@ -229,7 +229,7 @@ app.post('/api/supervisor/save-progress', authenticateToken, checkRole(['SUPERVI
     const result = await db.runAsync(
       `UPDATE checklists
        SET observaciones_generales = ?
-       WHERE id = ? AND supervisor_id = ? AND status = 'en_progreso'`,
+       WHERE id = ? AND supervisor_id = ? AND status IN ('en_progreso', 'en_edicion')`,
       [observaciones_generales || null, checklist_id, req.user.id]
     );
 
@@ -252,11 +252,14 @@ app.post('/api/supervisor/response', authenticateToken, checkRole(['SUPERVISOR']
     return res.status(400).json({ error: 'Faltan campos requeridos' });
   }
 
-  // Verificar que el checklist no esté finalizado
+  // Verificar que el checklist esté en estado editable (en_progreso o en_edicion)
   try {
     const cl = await db.queryOne('SELECT status FROM checklists WHERE id = ? AND supervisor_id = ?', [checklist_id, req.user.id]);
-    if (!cl || cl.status === 'completado') {
-      return res.status(403).json({ error: 'El turno ya fue finalizado, no se pueden modificar respuestas' });
+    if (!cl) {
+      return res.status(404).json({ error: 'Checklist no encontrado' });
+    }
+    if (cl.status !== 'en_progreso' && cl.status !== 'en_edicion') {
+      return res.status(403).json({ error: 'El turno no está disponible para editar' });
     }
   } catch (error) {
     return res.status(500).json({ error: 'Error interno del servidor' });
@@ -382,6 +385,54 @@ app.get('/api/supervisor/checklist/:id', authenticateToken, checkRole(['SUPERVIS
     res.json({ checklist, secciones: Object.values(secciones) });
   } catch (error) {
     console.error('Error obteniendo detalle del supervisor:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Reabrir checklist finalizado para edición
+app.post('/api/supervisor/reopen-checklist', authenticateToken, checkRole(['SUPERVISOR']), async (req, res) => {
+  const { checklist_id } = req.body;
+  
+  try {
+    const result = await db.runAsync(
+      `UPDATE checklists 
+       SET status = 'en_edicion'
+       WHERE id = ? AND supervisor_id = ? AND status = 'completado'`,
+      [checklist_id, req.user.id]
+    );
+    
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Checklist no encontrado o no está finalizado' });
+    }
+    
+    res.json({ success: true, message: 'Checklist reabierto para edición' });
+  } catch (error) {
+    console.error('Error reabriendo checklist:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Finalizar edición (cambiar status de 'en_edicion' a 'completado')
+app.post('/api/supervisor/finalize-edit', authenticateToken, checkRole(['SUPERVISOR']), async (req, res) => {
+  const { checklist_id, observaciones_generales } = req.body;
+  
+  try {
+    const result = await db.runAsync(
+      `UPDATE checklists 
+       SET status = 'completado',
+           completado_en = ?,
+           observaciones_generales = ?
+       WHERE id = ? AND supervisor_id = ? AND status = 'en_edicion'`,
+      [getEcuadorDateTime(), observaciones_generales || null, checklist_id, req.user.id]
+    );
+    
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Checklist no encontrado o no está en edición' });
+    }
+    
+    res.json({ success: true, message: 'Edición finalizada' });
+  } catch (error) {
+    console.error('Error finalizando edición:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
