@@ -114,7 +114,9 @@ app.get('/api/usuarios', async (req, res) => {
 
 // Obtener checklist activo del supervisor (o crear uno nuevo)
 app.get('/api/supervisor/active-checklist', authenticateToken, checkRole(['SUPERVISOR']), async (req, res) => {
-  const today = new Date().toISOString().split('T')[0];
+  const now = new Date();
+  const ecuadorTime = new Date(now.getTime() - (5 * 60 * 60 * 1000)); // UTC-5
+  const today = ecuadorTime.toISOString().split('T')[0];
   const supervisorId = req.user.id;
   
   try {
