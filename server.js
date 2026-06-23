@@ -679,6 +679,132 @@ app.get('/api/jefe/weekly-stats', authenticateToken, checkRole(['JEFE_PRODUCCION
 });
 
 // =============================================
+// ENDPOINTS DE ADMINISTRACIÓN (Panel Admin)
+// =============================================
+
+const path = require('path');
+const fs   = require('fs');
+
+// Serve the admin panel HTML
+app.get('/admin', (req, res) => {
+  const htmlPath = path.join(__dirname, 'admin-panel.html');
+  if (!fs.existsSync(htmlPath)) {
+    return res.status(404).send('Admin panel HTML not found.');
+  }
+  res.sendFile(htmlPath);
+});
+
+// List all user-created tables
+app.get('/api/admin/tables', async (req, res) => {
+  try {
+    const rows = await db.query(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+    );
+    res.json({ tables: rows.map(r => r.name) });
+  } catch (error) {
+    console.error('Admin: error listing tables:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Get all rows + schema for a table
+app.get('/api/admin/tables/:table', async (req, res) => {
+  const table = req.params.table;
+  // Validate table name to prevent SQL injection
+  const validName = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table);
+  if (!validName) {
+    return res.status(400).json({ error: 'Nombre de tabla inválido' });
+  }
+  try {
+    const schema = await db.query(`PRAGMA table_info(${table})`);
+    if (schema.length === 0) {
+      return res.status(404).json({ error: 'Tabla no encontrada' });
+    }
+    const rows = await db.query(`SELECT * FROM ${table}`);
+    res.json({ schema, rows });
+  } catch (error) {
+    console.error(`Admin: error reading table ${table}:`, error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Insert a new row into a table
+app.post('/api/admin/tables/:table', async (req, res) => {
+  const table = req.params.table;
+  const validName = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table);
+  if (!validName) {
+    return res.status(400).json({ error: 'Nombre de tabla inválido' });
+  }
+  try {
+    const schema = await db.query(`PRAGMA table_info(${table})`);
+    if (schema.length === 0) {
+      return res.status(404).json({ error: 'Tabla no encontrada' });
+    }
+    const cols = schema.filter(c => !c.pk).map(c => c.name);
+    const values = cols.map(c => req.body[c] !== undefined ? req.body[c] : null);
+    const placeholders = cols.map(() => '?').join(', ');
+    const sql = `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`;
+    const result = await db.runAsync(sql, values);
+    res.json({ success: true, id: result.lastID });
+  } catch (error) {
+    console.error(`Admin: error inserting into ${table}:`, error);
+    res.status(500).json({ error: error.message || 'Error interno del servidor' });
+  }
+});
+
+// Update a row by id
+app.put('/api/admin/tables/:table/:id', async (req, res) => {
+  const { table, id } = req.params;
+  const validName = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table);
+  if (!validName) {
+    return res.status(400).json({ error: 'Nombre de tabla inválido' });
+  }
+  try {
+    const schema = await db.query(`PRAGMA table_info(${table})`);
+    if (schema.length === 0) {
+      return res.status(404).json({ error: 'Tabla no encontrada' });
+    }
+    const pkCol = (schema.find(c => c.pk) || schema[0]).name;
+    const cols = schema.filter(c => !c.pk).map(c => c.name);
+    const values = cols.map(c => req.body[c] !== undefined ? req.body[c] : null);
+    const setClause = cols.map(c => `${c} = ?`).join(', ');
+    const sql = `UPDATE ${table} SET ${setClause} WHERE ${pkCol} = ?`;
+    const result = await db.runAsync(sql, [...values, id]);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Registro no encontrado' });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`Admin: error updating ${table}:`, error);
+    res.status(500).json({ error: error.message || 'Error interno del servidor' });
+  }
+});
+
+// Delete a row by id
+app.delete('/api/admin/tables/:table/:id', async (req, res) => {
+  const { table, id } = req.params;
+  const validName = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table);
+  if (!validName) {
+    return res.status(400).json({ error: 'Nombre de tabla inválido' });
+  }
+  try {
+    const schema = await db.query(`PRAGMA table_info(${table})`);
+    if (schema.length === 0) {
+      return res.status(404).json({ error: 'Tabla no encontrada' });
+    }
+    const pkCol = (schema.find(c => c.pk) || schema[0]).name;
+    const result = await db.runAsync(`DELETE FROM ${table} WHERE ${pkCol} = ?`, [id]);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Registro no encontrado' });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`Admin: error deleting from ${table}:`, error);
+    res.status(500).json({ error: error.message || 'Error interno del servidor' });
+  }
+});
+
+// =============================================
 // INICIAR SERVIDOR
 // =============================================
 
